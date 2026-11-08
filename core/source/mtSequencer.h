@@ -183,6 +183,8 @@ class Sequencer
             FX_TYPE_R8,
             FX_TYPE_R9,
 
+            // appended at the end on purpose: enum values are stored in project files
+            FX_TYPE_LPB,
         };
 
         enum enRollPeriod
@@ -428,6 +430,36 @@ class Sequencer
 
         } swing;
 
+        // Lines-per-beat (row clock) multiplier. Changes how fast ROWS advance, but not the
+        // timing of roll / arp / stutter / delay / LFO / glide, which stay locked to the BPM.
+        struct strLpb
+        {
+            enum : int16_t
+            {
+                kMin = 0,
+                kDefault = 1,
+                kMax = 3,
+            };
+
+            bool isActive = 0;
+            int16_t value = kDefault; // 0 = 1/2x, 1 = 1x, 2 = 2x, 3 = 4x
+
+            void set(int16_t val)
+            {
+                value = clamp<int16_t>(val, kMin, kMax);
+                isActive = (value != kDefault);
+            }
+            void reset()
+            {
+                value = kDefault;
+                isActive = 0;
+            }
+            // row clock speed relative to normal = numerator() / denominator()
+            uint8_t numerator() const { return value == 2 ? 2 : (value == 3 ? 4 : 1); }
+            uint8_t denominator() const { return value == 0 ? 2 : 1; }
+
+        } lpb;
+
         struct strPlayerTrack
         {
             struct strSendStep
@@ -560,7 +592,7 @@ class Sequencer
                 void set(uint16_t val)
                 {
                     offsetValue = val;
-                    offsetValue = clamp<uint16_t>(val, 0, 2 * 48);
+                    offsetValue = clamp<uint16_t>(val, 0, 2 * 48 * 4); // x4 LPB needs 4x range
                     isActive = 1;
                     isArmed = 0;
                     timer = 0;
@@ -642,6 +674,10 @@ class Sequencer
     float getCurrentTempo();
     float getExternalTempo() { return externalTempo; }
     uint32_t getSeqTimer();
+    // call after the "LPB effect" config option changed
+    void onLpbConfigChanged();
+    // length of one row in ticks of getSeqTimer() (576 at 1x, 288 at 2x ...)
+    uint16_t getBaseTicksPerRow();
 
     strPlayer const* ptrPlayer = &player;
 
@@ -961,11 +997,31 @@ class Sequencer
 
     void tick_uStep(void);
 
+    // Converts a count of micro-steps that is meant to last the same REAL time as at LPB 1x
+    // into the count needed at the current LPB (roll, arp, stutter).
+    uint16_t lpbCompensate(uint16_t uSteps);
+    uint16_t lpbApply(bool compensated, uint16_t uSteps);
+    // true on the tick where a period of basePeriod micro-steps (defined at 1x) ends, counted
+    // in real time. Exact on average even when the period is not a whole number of micro-steps.
+    bool lpbPeriodHit(uint32_t timer, uint16_t basePeriod);
+    // micro-move value (0-100% of a row at the real BPM) for the current record position
+    int getRecMicromoveValue();
+    // number of micro-steps between two MIDI clock pulses at the current LPB
+    uint16_t getMidiClockPeriodUSteps();
+    // nano ticks to play per external clock pulse at the current LPB
+    int getNanoTicksInClockPulse();
+
     void applyRowCustomFx(uint8_t x, uint8_t orderTemp);
 
     uint8_t isCustomPlayMode(uint8_t row);
 
     uint32_t timerTicks = 0;
+    // Same counter but advancing at the real BPM (not at the LPB-scaled row clock).
+    // Used for tempo-synced LFOs. Equals timerTicks while LPB is not used.
+    uint32_t baseTimerTicks = 0;
+    uint8_t baseTickAcc = 0;
+    void advanceTimerTicks();
+    void setTimerTicks(uint32_t value);
 
     void switchRowStep(uint8_t row);
     void reset_actual_pos(void);
@@ -992,8 +1048,9 @@ class Sequencer
 
     uint8_t rollValToVolumeOption(uint8_t);
     int8_t rollValToPeriod(int8_t rollVal);
-    inline uint16_t rollValToMicroSteps(int8_t rollType);
-    inline uint16_t stutterValToPeriod(int8_t rollType);
+    // compensated = false returns the period at 1x (used for exact hit detection at any LPB)
+    inline uint16_t rollValToMicroSteps(int8_t rollType, bool compensated = true);
+    inline uint16_t stutterValToPeriod(int8_t rollType, bool compensated = true);
 
     uint16_t arpPeriodToMicrosteps(int8_t period);
 

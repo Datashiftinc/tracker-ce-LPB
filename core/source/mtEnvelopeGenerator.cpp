@@ -188,7 +188,7 @@ void envelopeGenerator::calc()
             uint32_t ticksOnPeriod = (6912 / 12) * syncRate;
             if (ticksOnPeriod > 0)
             {
-                uint32_t stepShift = (startStep) * (6912 / 12);
+                uint32_t stepShift = (startStep) * seqTicksPerRow;
                 p = (float)((currentSeqTicks + stepShift) % ticksOnPeriod) / (float)ticksOnPeriod;
             }
         }
@@ -553,8 +553,9 @@ float envelopeGenerator::getLastOut()
     return (envTemp.output);
 }
 
-void envelopeGenerator::syncTrackerSeq(uint32_t val, float seqSpeed)
+void envelopeGenerator::syncTrackerSeq(uint32_t val, float seqSpeed, uint16_t ticksPerRow)
 {
+    seqTicksPerRow = ticksPerRow;
     currentSeqSpeed = seqSpeed;
     currentSeqTicks = val;
 }
@@ -572,7 +573,7 @@ void envelopeGenerator::calcSyncSeq()
     if (ticksOnPeriod == 0)
         return;
 
-    uint32_t stepShift = (startStep) * (6912 / 12);
+    uint32_t stepShift = (startStep) * seqTicksPerRow;
 
     currentSeqTicks += stepShift;
 

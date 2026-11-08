@@ -66,7 +66,7 @@ class envelopeGenerator
 
     void putMidiParameter(uint8_t ch, uint8_t parNo, uint8_t value);
 
-    void syncTrackerSeq(uint32_t val, float seqSpeed);
+    void syncTrackerSeq(uint32_t val, float seqSpeed, uint16_t ticksPerRow = 6912 / 12);
     void setSync(uint8_t state);
     void calcSyncSeq();
     void setSyncStartStep(uint16_t n);
@@ -118,6 +118,7 @@ class envelopeGenerator
     float syncRate = 1;
     uint16_t periodTime = 0;
     uint32_t currentSeqTicks = 0;
+    uint16_t seqTicksPerRow = 6912 / 12; // one row in sync ticks; shrinks/grows with LPB
     float currentSeqSpeed = 0;
     uint8_t isSync = 0;
 

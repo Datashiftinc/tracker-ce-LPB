@@ -88,6 +88,98 @@ void Sequencer::clearAllPatternSlots()
     }
 }
 
+AUDIO_CORE_RAM void Sequencer::advanceTimerTicks()
+{
+    timerTicks++;
+
+    // base ticks advance by denominator/numerator per raw tick (1x: 1, 2x: 1/2, 4x: 1/4, 1/2x: 2)
+    baseTickAcc += player.lpb.denominator();
+    if (baseTickAcc >= player.lpb.numerator())
+    {
+        baseTimerTicks += baseTickAcc / player.lpb.numerator();
+        baseTickAcc %= player.lpb.numerator();
+    }
+}
+
+AUDIO_CORE_RAM void Sequencer::setTimerTicks(uint32_t value)
+{
+    timerTicks = value;
+    baseTimerTicks = value;
+    baseTickAcc = 0;
+}
+
+void Sequencer::onLpbConfigChanged()
+{
+    if (!mtConfig.common.lpbEnabled)
+    {
+        player.lpb.reset();
+    }
+}
+
+AUDIO_CORE_RAM uint16_t Sequencer::lpbApply(bool compensated, uint16_t uSteps)
+{
+    return compensated ? lpbCompensate(uSteps) : uSteps;
+}
+
+AUDIO_CORE_RAM bool Sequencer::lpbPeriodHit(uint32_t timer, uint16_t basePeriod)
+{
+    if (basePeriod == 0 || timer == 0)
+        return false;
+
+    // The period lasts basePeriod * num / den micro-steps at the current LPB, which is not
+    // always a whole number (e.g. 3 * 1/2). A hit happens on the tick where a multiple of that
+    // period is crossed. At 1x/2x/4x this is exactly "(timer % period) == 1".
+    const uint32_t span = static_cast<uint32_t>(basePeriod) * player.lpb.numerator();
+    const uint32_t den = player.lpb.denominator();
+    const uint32_t e = timer - 1;
+    if (e == 0)
+        return true;
+    return ((e * den) / span) != (((e - 1) * den) / span);
+}
+
+AUDIO_CORE_RAM int Sequencer::getRecMicromoveValue()
+{
+    // position inside the current row, expressed in micro-steps of a row at the real BPM
+    int baseUStep = (player.uStep * player.lpb.denominator()) / player.lpb.numerator();
+    baseUStep = clamp<int>(baseUStep, 1, 48);
+    return mapClamped<int>(baseUStep, 1, 48, 0, 100);
+}
+
+uint16_t Sequencer::getBaseTicksPerRow()
+{
+    return kTicksInStep * player.lpb.denominator() / player.lpb.numerator();
+}
+
+AUDIO_CORE_RAM uint16_t Sequencer::lpbCompensate(uint16_t uSteps)
+{
+    if (uSteps == 0 || !player.lpb.isActive)
+        return uSteps;
+
+    // round to nearest; never collapse a non-zero period to 0
+    uint32_t scaled = (static_cast<uint32_t>(uSteps) * player.lpb.numerator() +
+                       player.lpb.denominator() / 2) /
+                      player.lpb.denominator();
+    if (scaled < 1)
+        scaled = 1;
+    if (scaled > 0xFFFF)
+        scaled = 0xFFFF;
+    return static_cast<uint16_t>(scaled);
+}
+
+AUDIO_CORE_RAM uint16_t Sequencer::getMidiClockPeriodUSteps()
+{
+    // 8 micro-steps per MIDI clock pulse at 1x -> 4 / 8 / 16 / 32
+    return (8 * player.lpb.numerator()) / player.lpb.denominator();
+}
+
+AUDIO_CORE_RAM int Sequencer::getNanoTicksInClockPulse()
+{
+    // one external clock pulse = one 24 PPQN pulse = fixed musical time (real BPM).
+    // With LPB the rows run faster/slower, so more/fewer nano ticks fit in that pulse.
+    const int base = kStepsPerBeat * kuStepsInStep * kNanoStepsInUStep / kExternalClockPpqn;
+    return (base * player.lpb.numerator()) / player.lpb.denominator();
+}
+
 AUDIO_CORE_RAM void Sequencer::tick(float intervalSeconds)
 {
 
@@ -112,8 +204,7 @@ AUDIO_CORE_RAM void Sequencer::tick(float intervalSeconds)
     else
     {
         midiSetClockSubBlockOffsetUs(0U);
-        static const int nanoTicksInClockPulse =
-          kStepsPerBeat * kuStepsInStep * kNanoStepsInUStep / kExternalClockPpqn;
+        const int nanoTicksInClockPulse = getNanoTicksInClockPulse();
 
         if (externalClockPulses > 0)
         {
@@ -186,7 +277,8 @@ AUDIO_CORE_RAM void Sequencer::tick_uStep(void)
     {
         if (isMetronomeApplicableForActualRecordingSource() || (player.preRecMetronomeActive))
         {
-            if (timerTicks % kTicksInStep == 0)
+            // one metronome step = one row at the real BPM, also while LPB is active
+            if (timerTicks % (kTicksInStep * player.lpb.numerator() / player.lpb.denominator()) == 0)
             {
                 bool isActiveRecordingMetronome =
                   isMetronomeActive() || (SR->waitForPreRollEnd && !isMetronomeActive());
@@ -228,7 +320,7 @@ AUDIO_CORE_RAM void Sequencer::tick_uStep(void)
 
             if (!isPlay())
             {
-                timerTicks++;
+                advanceTimerTicks();
             }
         }
     }
@@ -239,7 +331,7 @@ AUDIO_CORE_RAM void Sequencer::tick_uStep(void)
 
     if (player.isPlay)
     {
-        timerTicks++;
+        advanceTimerTicks();
 
         if (timerTicks % 12 == 1)
         {
@@ -345,7 +437,17 @@ AUDIO_CORE_RAM void Sequencer::play_microStep(int row)
     if ((playerRow.uStep > 0) && player.isPlay && row == 0 &&
         (!player.selectionMode || player.selectionModeLooped))
     {
-        if (((playerRow.uStep - 1) % 8) == 0)
+        bool sendClockNow;
+        if (!player.lpb.isActive)
+        {
+            sendClockNow = (((playerRow.uStep - 1) % 8) == 0);
+        }
+        else
+        {
+            // keep the MIDI clock output locked to the real BPM, not to the (faster/slower) rows
+            sendClockNow = (((timerTicks - 13) / 12) % getMidiClockPeriodUSteps()) == 0;
+        }
+        if (sendClockNow)
             sendMidiClock();
     }
 
@@ -404,7 +506,8 @@ AUDIO_CORE_RAM void Sequencer::play_microStep(int row)
     if (playerRow.uStep == 1)
     {
 
-        if (stepToSend.fx[0].type == fx.FX_TYPE_RANDOM_VALUE)
+        // Random value never randomises the LPB value
+        if (stepToSend.fx[0].type == fx.FX_TYPE_RANDOM_VALUE && stepToSend.fx[1].type != fx.FX_TYPE_LPB)
         {
             int16_t lowVal = clamp<int>(stepToSend.fx[1].value - stepToSend.fx[0].value,
                                         getFxMin(stepToSend.fx[1].type, true),
@@ -416,7 +519,7 @@ AUDIO_CORE_RAM void Sequencer::play_microStep(int row)
 
             randomisedValue = utilMathRandom::random(lowVal, hiVal + 1);
         }
-        else if (stepToSend.fx[1].type == fx.FX_TYPE_RANDOM_VALUE)
+        else if (stepToSend.fx[1].type == fx.FX_TYPE_RANDOM_VALUE && stepToSend.fx[0].type != fx.FX_TYPE_LPB)
         {
             int16_t lowVal = clamp<int>(stepToSend.fx[0].value - stepToSend.fx[1].value,
                                         getFxMin(stepToSend.fx[0].type, true),
@@ -466,14 +569,14 @@ AUDIO_CORE_RAM void Sequencer::play_microStep(int row)
                     offsetValue =
                       map(getInstrumentMidiOffset(stepToSend.instrument) + 1, 0, 100, 1, 46);
 
-                    playerRow.micromove.set(offsetValue);
+                    playerRow.micromove.set(lpbCompensate(offsetValue));
                 }
             }
 
             if (stepToSend.micromove >= 0)
             {
                 uint16_t micromoveVal = map(stepToSend.micromove + 1, 0, 100, 1, 48) + offsetValue;
-                playerRow.micromove.set(clamp<int>(micromoveVal, 0, 48 * 2));
+                playerRow.micromove.set(lpbCompensate(clamp<int>(micromoveVal, 0, 48 * 2)));
             }
 
             if (stepToSend.volume >= 0)
@@ -528,7 +631,7 @@ AUDIO_CORE_RAM void Sequencer::play_microStep(int row)
 
                     micromoveVal = clamp<int>(micromoveVal, 0, 48 * 2);
 
-                    playerRow.micromove.set(micromoveVal);
+                    playerRow.micromove.set(lpbCompensate(micromoveVal));
 
                     break;
                 }
@@ -543,7 +646,7 @@ AUDIO_CORE_RAM void Sequencer::play_microStep(int row)
                     }
                     break;
                 case fx.FX_TYPE_GATE_LENGTH:
-                    gateLength = mapClamped<int>(_fx.value, 0, 100, 0, 47);
+                    gateLength = lpbCompensate(mapClamped<int>(_fx.value, 0, 100, 0, 47));
                     break;
                 case fx.FX_TYPE_OFF:
                     killFxOnSlot(row, fxIndex);
@@ -695,6 +798,17 @@ AUDIO_CORE_RAM void Sequencer::play_microStep(int row)
                     atLeastOneFx = 1;
 
                     player.swing.setSwing(_fx.value);
+
+                    break;
+
+                case fx.FX_TYPE_LPB:
+                    killFxOnSlot(row, fxIndex);
+                    atLeastOneFx = 1;
+
+                    if (mtConfig.common.lpbEnabled)
+                        player.lpb.set(_fx.value);
+                    else
+                        player.lpb.reset();
 
                     break;
 
@@ -1017,10 +1131,10 @@ AUDIO_CORE_RAM void Sequencer::play_microStep(int row)
     // **************************
     if (playerRow.stepSent.note != STEP_NOTE_EMPTY && playerRow.performanceStepRepeater != 0)
     {
-        uint16_t period = stutterValToPeriod(playerRow.performanceStepRepeater);
+        uint16_t period = stutterValToPeriod(playerRow.performanceStepRepeater, false);
         if (period)
         {
-            if ((playerRow.stepTimer % period) == 1)
+            if (lpbPeriodHit(playerRow.stepTimer, period))
             {
                 playerRow.stepToSend = playerRow.stepSent;
 
@@ -1048,7 +1162,8 @@ AUDIO_CORE_RAM void Sequencer::play_microStep(int row)
     // getChordBitmask(playerRow.arp.chord)
     else if (playerRow.stepOpen && playerRow.arp.isOn)
     {
-        if (playerRow.arp.timer >= playerRow.arp.length)
+        // evaluated every tick so a LPB change during a running arp is picked up immediately
+        if (playerRow.arp.timer >= arpPeriodToMicrosteps(playerRow.arp.period))
         {
             playerRow.arp.timer = 0;
 
@@ -1086,10 +1201,10 @@ AUDIO_CORE_RAM void Sequencer::play_microStep(int row)
         if (playerRow.roll.period != fx.ROLL_PERIOD_NONE)
         {
             // sprawdzamy timer microstepów, czy jest wielokrotrością rolki
-            uint16_t microsteps = rollValToMicroSteps(playerRow.roll.period);
+            uint16_t microsteps = rollValToMicroSteps(playerRow.roll.period, false);
             if (microsteps)
             {
-                if (((playerRow.stepTimer % microsteps) == 1) &&
+                if (lpbPeriodHit(playerRow.stepTimer, microsteps) &&
                     (playerRow.stepTimer != 1 || forceFirstRollWhenNoNote))
                 {
                     playerRow.stepContRoll = playerRow.stepSent;
@@ -1237,69 +1352,69 @@ AUDIO_CORE_RAM uint16_t Sequencer::arpPeriodToMicrosteps(int8_t period)
 {
     switch (period)
     {
-        case fx.arpPeriod_8: return 8 * 48;
-        case fx.arpPeriod_6: return 6 * 48;
-        case fx.arpPeriod_4: return 4 * 48;
-        case fx.arpPeriod_3: return 3 * 48;
-        case fx.arpPeriod_2: return 2 * 48;
-        case fx.arpPeriod_1: return 1 * 48;
+        case fx.arpPeriod_8: return lpbCompensate(8 * 48);
+        case fx.arpPeriod_6: return lpbCompensate(6 * 48);
+        case fx.arpPeriod_4: return lpbCompensate(4 * 48);
+        case fx.arpPeriod_3: return lpbCompensate(3 * 48);
+        case fx.arpPeriod_2: return lpbCompensate(2 * 48);
+        case fx.arpPeriod_1: return lpbCompensate(1 * 48);
 
-        case fx.arpPeriod_1_2: return 48 / 2;
-        case fx.arpPeriod_1_3: return 48 / 3;
-        case fx.arpPeriod_1_4: return 48 / 4;
-        case fx.arpPeriod_1_6: return 48 / 6;
-        case fx.arpPeriod_1_8: return 48 / 8;
+        case fx.arpPeriod_1_2: return lpbCompensate(48 / 2);
+        case fx.arpPeriod_1_3: return lpbCompensate(48 / 3);
+        case fx.arpPeriod_1_4: return lpbCompensate(48 / 4);
+        case fx.arpPeriod_1_6: return lpbCompensate(48 / 6);
+        case fx.arpPeriod_1_8: return lpbCompensate(48 / 8);
 
-        default: return 48;
+        default: return lpbCompensate(48);
     }
 }
-uint16_t Sequencer::rollValToMicroSteps(int8_t rollVal)
+uint16_t Sequencer::rollValToMicroSteps(int8_t rollVal, bool compensated)
 {
 
     rollVal = rollVal % (fx.ROLL_PERIOD_MAX + 1);
     switch (rollVal)
     {
-        case fx.ROLL_PERIOD_NONE: return 0;
-        case fx.ROLL_PERIOD_1_1: return 48;
-        case fx.ROLL_PERIOD_1_2: return 24;
-        case fx.ROLL_PERIOD_1_3: return 16;
-        case fx.ROLL_PERIOD_1_4: return 12;
-        case fx.ROLL_PERIOD_1_6: return 8;
-        case fx.ROLL_PERIOD_1_8: return 6;
-        case fx.ROLL_PERIOD_1_12: return 4;
-        case fx.ROLL_PERIOD_1_16: return 3;
-        default: return 0;
+        case fx.ROLL_PERIOD_NONE: return lpbApply(compensated, 0);
+        case fx.ROLL_PERIOD_1_1: return lpbApply(compensated, 48);
+        case fx.ROLL_PERIOD_1_2: return lpbApply(compensated, 24);
+        case fx.ROLL_PERIOD_1_3: return lpbApply(compensated, 16);
+        case fx.ROLL_PERIOD_1_4: return lpbApply(compensated, 12);
+        case fx.ROLL_PERIOD_1_6: return lpbApply(compensated, 8);
+        case fx.ROLL_PERIOD_1_8: return lpbApply(compensated, 6);
+        case fx.ROLL_PERIOD_1_12: return lpbApply(compensated, 4);
+        case fx.ROLL_PERIOD_1_16: return lpbApply(compensated, 3);
+        default: return lpbApply(compensated, 0);
     }
-    return 0;
+    return lpbApply(compensated, 0);
 }
 
-uint16_t Sequencer::stutterValToPeriod(int8_t rollVal)
+uint16_t Sequencer::stutterValToPeriod(int8_t rollVal, bool compensated)
 {
 
     rollVal = rollVal % (fx.STUTTER_PERIOD_MAX + 1);
     switch (rollVal)
     {
-        case fx.STUTTER_PERIOD_NONE: return 0;
+        case fx.STUTTER_PERIOD_NONE: return lpbApply(compensated, 0);
 
-        case fx.STUTTER_PERIOD_16_1: return 16 * 48;
-        case fx.STUTTER_PERIOD_12_1: return 12 * 48;
-        case fx.STUTTER_PERIOD_8_1: return 8 * 48;
-        case fx.STUTTER_PERIOD_6_1: return 6 * 48;
-        case fx.STUTTER_PERIOD_4_1: return 4 * 48;
-        case fx.STUTTER_PERIOD_3_1: return 3 * 48;
-        case fx.STUTTER_PERIOD_2_1: return 2 * 48;
+        case fx.STUTTER_PERIOD_16_1: return lpbApply(compensated, 16 * 48);
+        case fx.STUTTER_PERIOD_12_1: return lpbApply(compensated, 12 * 48);
+        case fx.STUTTER_PERIOD_8_1: return lpbApply(compensated, 8 * 48);
+        case fx.STUTTER_PERIOD_6_1: return lpbApply(compensated, 6 * 48);
+        case fx.STUTTER_PERIOD_4_1: return lpbApply(compensated, 4 * 48);
+        case fx.STUTTER_PERIOD_3_1: return lpbApply(compensated, 3 * 48);
+        case fx.STUTTER_PERIOD_2_1: return lpbApply(compensated, 2 * 48);
 
-        case fx.STUTTER_PERIOD_1_1: return 48;
-        case fx.STUTTER_PERIOD_1_2: return 24;
-        case fx.STUTTER_PERIOD_1_3: return 16;
-        case fx.STUTTER_PERIOD_1_4: return 12;
-        case fx.STUTTER_PERIOD_1_6: return 8;
-        case fx.STUTTER_PERIOD_1_8: return 6;
-        case fx.STUTTER_PERIOD_1_12: return 4;
-        case fx.STUTTER_PERIOD_1_16: return 3;
-        default: return 0;
+        case fx.STUTTER_PERIOD_1_1: return lpbApply(compensated, 48);
+        case fx.STUTTER_PERIOD_1_2: return lpbApply(compensated, 24);
+        case fx.STUTTER_PERIOD_1_3: return lpbApply(compensated, 16);
+        case fx.STUTTER_PERIOD_1_4: return lpbApply(compensated, 12);
+        case fx.STUTTER_PERIOD_1_6: return lpbApply(compensated, 8);
+        case fx.STUTTER_PERIOD_1_8: return lpbApply(compensated, 6);
+        case fx.STUTTER_PERIOD_1_12: return lpbApply(compensated, 4);
+        case fx.STUTTER_PERIOD_1_16: return lpbApply(compensated, 3);
+        default: return lpbApply(compensated, 0);
     }
-    return 0;
+    return lpbApply(compensated, 0);
 }
 
 void Sequencer::play(void)
@@ -1326,7 +1441,7 @@ AUDIO_CORE_RAM void Sequencer::play(uint8_t fromPos)
 
     player.isStop = 0;
     player.isPlay = 1;
-    timerTicks = 1;
+    setTimerTicks(1);
     internalTickAccumulatorUs = 0.0;
 
     player.uStep = 1;
@@ -1384,7 +1499,7 @@ void Sequencer::playSelection(bool looped) // potrzebuje aktualnego zaznaczenia
     player.selectionModeLooped = looped;
     player.selectionModeLastStep = player.loopSelection.lastStep;
 
-    timerTicks = 1;
+    setTimerTicks(1);
 
     player.uStep = 1;
 
@@ -1567,12 +1682,13 @@ void Sequencer::stop(StopContext context)
     player.selectionModeLooped = false;
 
     player.swing.resetSwing();
+    player.lpb.reset();
 
     player.preRecMetronomeActive = 0;
 
     player.breakPattern = 0;
 
-    timerTicks = 0;
+    setTimerTicks(0);
     internalTickAccumulatorUs = 0.0;
 
     if (player.onPatternOrSelectionEnd == cbkTurnOffPerformanceMode)
@@ -2270,7 +2386,7 @@ float Sequencer::getCurrentTempo()
 
 uint32_t Sequencer::getSeqTimer()
 {
-    return timerTicks;
+    return baseTimerTicks;
 }
 
 void Sequencer::detachFromTimer(void) // make time abstract
@@ -2294,13 +2410,19 @@ AUDIO_CORE_RAM float Sequencer::getStepPeriodMs(void)
 
 AUDIO_CORE_RAM float Sequencer::getTimerPeriod_us(void)
 {
+    // LPB only speeds up / slows down the row clock. getCurrentTempo() stays the real BPM
+    // so everything that reads it (delay, LFO, glide...) is unaffected.
+    const double lpbScale =
+      static_cast<double>(player.lpb.denominator()) / static_cast<double>(player.lpb.numerator());
+
     if (player.swing.isActive)
     {
-        return ((3125.0 * player.swing.getTempoCorrection()) / getCurrentTempo()) / 12.0;
+        return (((3125.0 * player.swing.getTempoCorrection()) / getCurrentTempo()) / 12.0) *
+               lpbScale;
     }
     else
     {
-        return (312500.0 / getCurrentTempo()) / 12.0;
+        return ((312500.0 / getCurrentTempo()) / 12.0) * lpbScale;
     }
 }
 
@@ -2764,7 +2886,7 @@ AUDIO_CORE_FLASH void Sequencer::handleNoteOn(
                         step->micromove =
                           isAnticipatedBeat1
                             ? 0
-                            : clamp<int>(mapClamped<int>(player.uStep, 1, 48, 0, 100),
+                            : clamp<int>(getRecMicromoveValue(),
                                          getFxMin(fx.FX_TYPE_MICROMOVE),
                                          getFxMax(fx.FX_TYPE_MICROMOVE));
 
@@ -3000,7 +3122,7 @@ void Sequencer::handleNoteOff(byte channel, // pochodzenie grida np. GRID_OUTSID
                             if (recMicrotiming() && destinationStep == player.track[tr].actual_pos)
                             {
                                 step->micromove =
-                                  clamp<int>(mapClamped<int>(player.uStep, 1, 48, 0, 100),
+                                  clamp<int>(getRecMicromoveValue(),
                                              getFxMin(fx.FX_TYPE_MICROMOVE),
                                              getFxMax(fx.FX_TYPE_MICROMOVE));
                             }
@@ -3071,7 +3193,7 @@ void Sequencer::handleNoteOff(byte channel, // pochodzenie grida np. GRID_OUTSID
                             if (recMicrotiming() && destinationStep == player.track[tr].actual_pos)
                             {
                                 step->micromove =
-                                  clamp<int>(mapClamped<int>(player.uStep, 1, 48, 0, 100),
+                                  clamp<int>(getRecMicromoveValue(),
                                              getFxMin(fx.FX_TYPE_MICROMOVE),
                                              getFxMax(fx.FX_TYPE_MICROMOVE));
                             }
@@ -3644,8 +3766,7 @@ void Sequencer::handleMidiInStop()
         if (!isSetInternalClock() && !player.selectionMode)
         {
             midiSetClockSubBlockOffsetUs(0U);
-            static const int nanoTicksInClockPulse =
-              kStepsPerBeat * kuStepsInStep * kNanoStepsInUStep / kExternalClockPpqn;
+            const int nanoTicksInClockPulse = getNanoTicksInClockPulse();
 
             if (externalClockPulses > 0)
             {

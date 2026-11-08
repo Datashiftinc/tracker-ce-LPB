@@ -474,6 +474,9 @@ void checkConfig()
     if (mtConfig.common.usbAudioMode >= 4)
         mtConfig.common.usbAudioMode = 0;
 
+    if (mtConfig.common.lpbEnabled > 1)
+        mtConfig.common.lpbEnabled = 0;
+
     // TODO dodac zapis spowrotem do configu jesli np przy sprawdzaniu wazne dane sie nie zgadzały
     // TODO
     // TODO
@@ -584,6 +587,7 @@ void resetConfig()
     // common ----------------------------------------
     mtConfig.common.equalSliceNumber = 8;
     mtConfig.common.usbAudioMode = 0;
+    mtConfig.common.lpbEnabled = 0;
 }
 
 uint16_t sizes[10];

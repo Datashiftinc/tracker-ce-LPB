@@ -187,8 +187,11 @@ uint8_t Sequencer::generateRandomFx()
     uint8_t retVal;
     for (uint8_t a = 0; a < 100; a++)
     {
-        retVal = utilMathRandom::random(fx.FX_TYPE_OFF + 1, FX_COUNT - FX_COUNT_HIDDEN_FXes + 1);
+        // Fixed upper bound (exclusive): the range of effect IDs the random picker always used.
+        // It must not follow FX_COUNT, so newly added effects (like LPB) are never picked at random.
+        retVal = utilMathRandom::random(fx.FX_TYPE_OFF + 1, 46);
         if (retVal != fx.FX_TYPE_TEMPO && retVal != fx.FX_TYPE_BREAK_PATTERN // breaka nie chcemy
+            && retVal != fx.FX_TYPE_LPB                                      // LPB never at random
         )
             break;
     }
@@ -1756,6 +1759,7 @@ AUDIO_CORE_RAM int16_t Sequencer::getFxMax(uint8_t fxID, bool forRandom)
         case fx.FX_TYPE_MICROMOVE: return 100;
         case fx.FX_TYPE_TEMPO: return MAX_TEMPO_FX;
         case fx.FX_TYPE_SWING: return 75;
+        case fx.FX_TYPE_LPB: return strPlayer::strLpb::kMax;
         case fx.FX_TYPE_OFF: return 0;
         case fx.FX_TYPE_RANDOM_INSTRUMENT: return 47;
         case fx.FX_TYPE_RANDOM_VALUE: return 255;
@@ -1800,6 +1804,7 @@ AUDIO_CORE_RAM int16_t Sequencer::getFxMin(uint8_t fxID, bool forRandom)
             return forRandom ? MIN_TEMPO_FX : TEMPO_FX_STP;
         }
         case fx.FX_TYPE_SWING: return 25;
+        case fx.FX_TYPE_LPB: return strPlayer::strLpb::kMin;
         case fx.FX_TYPE_PANNING: return 0;
         case fx.FX_TYPE_BREAK_PATTERN: return 1;
         case fx.FX_TYPE_ROLL: return fx.ROLL_PERIOD_MIN;
@@ -1816,6 +1821,7 @@ int16_t Sequencer::getFxDefault(uint8_t fxID)
         case fx.FX_TYPE_OFF: return 0;
         case fx.FX_TYPE_TEMPO: return 60;
         case fx.FX_TYPE_SWING: return 50;
+        case fx.FX_TYPE_LPB: return strPlayer::strLpb::kDefault;
         case fx.FX_TYPE_ROLL: return 1;
         case fx.FX_TYPE_BREAK_PATTERN: return 1;
         case fx.FX_TYPE_PANNING: return 50;
@@ -1966,6 +1972,21 @@ void Sequencer::makeFxValLabelWithAlgin(char* ptr,
             break;
         }
         case fx.FX_TYPE_OFF: strncpy(ptr, "OFF", len); break;
+
+        case fx.FX_TYPE_LPB:
+        {
+            static const char* const lpbLabels[] = { "x.5", "x1", "x2", "x4" };
+            const char* label = lpbLabels[clamp<int>(valAfterCorrection, 0, 3)];
+            if (align == fxValLabelAlign_right)
+            {
+                snprintf(ptr, len, "%3s", label);
+            }
+            else
+            {
+                strncpy(ptr, label, len);
+            }
+            break;
+        }
 
         case fx.FX_TYPE_REVERSE_PLAYBACK:
             strncpy(ptr, valAfterCorrection > 0 ? "<<<" : ">>>", len);
