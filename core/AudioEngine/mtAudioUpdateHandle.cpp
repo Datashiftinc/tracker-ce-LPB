@@ -163,7 +163,8 @@ inline void playerEngine::handleUpdateEnvelope(uint8_t type, bool enableConditio
                         if (sequencer.getSeqState())
                         {
                             envelopePtr[type]->syncTrackerSeq(sequencer.getSeqTimer(),
-                                                              sequencer.getCurrentTempo());
+                                                              sequencer.getCurrentTempo(),
+                                                              sequencer.getBaseTicksPerRow());
                             envelopePtr[type]->setSync(1);
                         }
                         else
