@@ -309,6 +309,14 @@ const char* const fxDescriptions[FX_COUNT] = {
     "\nAfter 057B, inversions:"
     "\n038: Maj/1st  059: Maj/2nd"
     "\n049: Min/1st  058: Min/2nd",
+    // Sequencer::strFxConsts::enFxType::FX_TYPE_LPB,
+    "Destination: Pattern \n\n"
+    "Lines per beat. Changes how fast the rows play, without changing the BPM. "
+    "Roll, Arp, Delay, LFOs and Glide keep their timing relative to the BPM, "
+    "also with external clock."
+    "\n\n"
+    "x.5: half speed\nx1: normal\nx2: double speed\nx4: four times faster\n\n"
+    "Stays active until changed or playback stops.",
     // Sequencer::strFxConsts::enFxType::FX_TYPE_BREAK_PATTERN,
     "Destination: Pattern \n\n"
     "Breaks current pattern playback and jumps to the next pattern.",
@@ -583,6 +591,14 @@ const char* const fxDescriptions[FX_COUNT] = {
     "\nAfter 057B, inversions:"
     "\n038: Maj/1st  059: Maj/2nd"
     "\n049: Min/1st  058: Min/2nd",
+    // Sequencer::strFxConsts::enFxType::FX_TYPE_LPB,
+    "Destination: Pattern \n\n"
+    "Lines per beat. Changes how fast the rows play, without changing the BPM. "
+    "Roll, Arp, Delay, LFOs and Glide keep their timing relative to the BPM, "
+    "also with external clock."
+    "\n\n"
+    "x.5: half speed\nx1: normal\nx2: double speed\nx4: four times faster\n\n"
+    "Stays active until changed or playback stops.",
     // Sequencer::strFxConsts::enFxType::FX_TYPE_BREAK_PATTERN,
     "Destination: Pattern \n\n"
     "Breaks current pattern playback and jumps to the next pattern.",
