@@ -20,15 +20,15 @@
 #ifdef TRACKER_MINI
 constexpr uint8_t baseMenuGroupCount = 8;
 constexpr uint8_t projectMenuGroupCount = 10;
-constexpr uint8_t generalMenuGroupCount = 9;
+constexpr uint8_t generalMenuGroupCount = 10;
 #elif defined(PLATFORM_IMX)
 constexpr uint8_t baseMenuGroupCount = 7;
 constexpr uint8_t projectMenuGroupCount = 10;
-constexpr uint8_t generalMenuGroupCount = 12;
+constexpr uint8_t generalMenuGroupCount = 13;
 #else
 constexpr uint8_t baseMenuGroupCount = 6;
 constexpr uint8_t projectMenuGroupCount = 10;
-constexpr uint8_t generalMenuGroupCount = 12;
+constexpr uint8_t generalMenuGroupCount = 13;
 #endif
 
 // baza baz
@@ -104,6 +104,7 @@ const strItemTypeListText setupHexMode{ &mtConfig.general.numberingMode, std::si
 const strItemTypeListText setupPadPreviewInPatternEdit{ &mtConfig.general.padPreviewInPatternEdit, 3, padPreviewInPatternEditTexts };
 const strItemTypeListText setupPatternArrangement{ &mtConfig.general.patternArrangement, 3, patternArrangementTexts };
 const strItemTypeListText setupPatternInfo{ &mtConfig.general.patternInfo, 3, patternInfoTexts };
+const strItemTypeListTextWithAction setupLpbEnabled{ &mtConfig.common.lpbEnabled, 2, onOffStateTexts, setLpbEnabled };
 const strItemTypeListTextWithAction setupLineInOutType{ &mtConfig.general.lineInOutType, 3,  lineInOutType, setLineInOutType };
 
 #ifndef TRACKER_MINI
@@ -171,6 +172,11 @@ cMenuItem melLinInOutType(menuGeneral,
                           lineInChannelDesc,
                           menuTypeItemListTextWithAction,
                           &setupLineInOutType);
+cMenuItem melLpbEnabled(menuGeneral,
+                        "LPB effect",
+                        lpbEnabledDesc,
+                        menuTypeItemListTextWithAction,
+                        &setupLpbEnabled);
 
 //==================================================================================================================================================================
 // Metroneome

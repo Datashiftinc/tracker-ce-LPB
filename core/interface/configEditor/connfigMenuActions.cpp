@@ -153,6 +153,11 @@ void setSlaveClockCompValue()
     sequencer.setExternalClockComp(mtConfig.midi.slaveClockComp);
 }
 
+void setLpbEnabled()
+{
+    sequencer.onLpbConfigChanged();
+}
+
 void resetConfigShowPopup()
 {
     configEditor.showResetConfigPopout();

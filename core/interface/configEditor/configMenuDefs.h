@@ -373,6 +373,11 @@ const char firmUpdDesc[] = {
     "polyend.com."
 };
 
+const char lpbEnabledDesc[] = { "Enables the Lines per beat (o) pattern effect. It changes how fast the "
+                                "rows play (x.5, x2, x4) without changing the BPM, while Roll, Arp, "
+                                "Delay and LFOs keep following the BPM. When Off the effect is "
+                                "ignored." };
+
 const char slaveClockCompDesc[] = { "Allows compensating latency of incoming clock signal by "
                                     "number of clock pulses, where 1 pulse = 1/6 of step. "
                                     "Use this with \"Clock in\" set to MIDI IN jack or USB. " };

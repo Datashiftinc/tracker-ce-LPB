@@ -21,6 +21,7 @@ void setSnapToZeroMode();
 
 void setMetronomValues();
 void setSlaveClockCompValue();
+void setLpbEnabled();
 
 void openCreditsAction();
 
